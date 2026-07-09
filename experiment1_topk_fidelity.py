@@ -187,13 +187,13 @@ def main():
         df = pd.read_parquet(args.data_path)
         ds = df.to_dict("records")[:args.num_prompts]
     elif args.data_path and args.data_path.endswith(".jsonl"):
-        # Direct json.loads — more robust than pandas for weird JSONL
+        # Direct json.loads — more robust than pandas
         import json
         ds = []
         with open(args.data_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if line:
+                if line and line.startswith("{"):
                     ds.append(json.loads(line))
                     if len(ds) >= args.num_prompts:
                         break
@@ -202,10 +202,12 @@ def main():
         ds = load_dataset("gsm8k", "main", split="test")
         ds = ds.select(range(min(len(ds), args.num_prompts)))
 
-    # Auto-detect field names (MATH-500: problem/solution/answer, GSM8K: question/answer)
+    # Auto-detect field names:
+    # AIME: prompt=[{role, content}], label="721"
+    # MATH-500: problem/solution/answer, GSM8K: question/answer
     s0 = ds[0]
-    q_field = next((f for f in ["problem", "question", "input", "prompt"] if f in s0), None)
-    a_field = next((f for f in ["answer", "solution", "output", "completion"] if f in s0), None)
+    q_field = next((f for f in ["problem", "question", "prompt"] if f in s0), None)
+    a_field = next((f for f in ["label", "answer", "solution"] if f in s0), None)
     if q_field is None or a_field is None:
         print(f"ERROR: cannot find question/answer fields. Available: {list(s0.keys())}")
         import sys; sys.exit(1)
@@ -213,19 +215,27 @@ def main():
 
     prompts, refs = [], []
     for s in ds:
-        q = s[q_field]
+        q_val = s[q_field]
+        # Handle chat-format prompt (AIME): extract content from last user message
+        if isinstance(q_val, list):
+            user_msgs = [m["content"] for m in q_val if m.get("role") == "user"]
+            q = user_msgs[-1] if user_msgs else str(q_val)
+        else:
+            q = str(q_val)
+
         a = str(s[a_field])
         prompts.append(MATH_PROMPT.format(problem=q))
-        # Extract answer: \boxed{...} > ####<num> > last number > raw 'answer' field
+        # Extract answer: first try raw (AIME label is already clean)
+        # then \boxed{...} (MATH-500), then ####<num> (GSM8K)
+        a_clean = a.strip().replace(",", "").replace(" ", "")
         m = re.findall(r'\\boxed\{([^}]+)\}', a)
         if m:
-            refs.append(m[-1].strip().replace(",", "").replace(" ", ""))
+            a_clean = m[-1].strip().replace(",", "").replace(" ", "")
         else:
             m2 = re.search(r'####\s*(-?[\d,]+)', a)
             if m2:
-                refs.append(m2.group(1).replace(",", ""))
-            else:
-                refs.append(a.strip())  # MATH-500 'answer' field is already clean
+                a_clean = m2.group(1).replace(",", "")
+        refs.append(a_clean)
     print(f"  {len(prompts)} prompts loaded")
 
     # ── Generate ──────────────────────────────────────────
