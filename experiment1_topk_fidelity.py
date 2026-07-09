@@ -186,19 +186,40 @@ def main():
         import pandas as pd
         df = pd.read_parquet(args.data_path)
         ds = df.to_dict("records")[:args.num_prompts]
+    elif args.data_path and args.data_path.endswith(".jsonl"):
+        import pandas as pd
+        df = pd.read_json(args.data_path, lines=True)
+        ds = df.to_dict("records")[:args.num_prompts]
     else:
         from datasets import load_dataset
         ds = load_dataset("gsm8k", "main", split="test")
         ds = ds.select(range(min(len(ds), args.num_prompts)))
 
+    # Auto-detect field names (MATH-500: problem/solution/answer, GSM8K: question/answer)
+    s0 = ds[0]
+    q_field = next((f for f in ["problem", "question", "input", "prompt"] if f in s0), None)
+    a_field = next((f for f in ["answer", "solution", "output", "completion"] if f in s0), None)
+    if q_field is None or a_field is None:
+        print(f"ERROR: cannot find question/answer fields. Available: {list(s0.keys())}")
+        import sys; sys.exit(1)
+    print(f"  Fields: '{q_field}' + '{a_field}'  |  {len(ds)} samples")
+
     prompts, refs = [], []
     for s in ds:
-        q = s["question"]
-        a = s["answer"]
+        q = s[q_field]
+        a = str(s[a_field])
         prompts.append(MATH_PROMPT.format(problem=q))
-        m = re.search(r'####\s*(-?[\d,]+)', a)
-        refs.append(m.group(1).replace(",", "") if m else a)
-    print(f"  {len(prompts)} prompts")
+        # Extract answer: \boxed{...} > ####<num> > last number > raw 'answer' field
+        m = re.findall(r'\\boxed\{([^}]+)\}', a)
+        if m:
+            refs.append(m[-1].strip().replace(",", "").replace(" ", ""))
+        else:
+            m2 = re.search(r'####\s*(-?[\d,]+)', a)
+            if m2:
+                refs.append(m2.group(1).replace(",", ""))
+            else:
+                refs.append(a.strip())  # MATH-500 'answer' field is already clean
+    print(f"  {len(prompts)} prompts loaded")
 
     # ── Generate ──────────────────────────────────────────
     completions_store = {}
