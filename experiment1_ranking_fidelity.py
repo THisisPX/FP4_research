@@ -99,8 +99,8 @@ def generate_batch(client: OpenAI, prompts: list[str], n: int,
         for i, prompt in enumerate(prompts):
             for j in range(n):
                 fut = ex.submit(
-                    lambda p=prompt: client.completions.create(
-                        model="default",
+                    lambda p=prompt, mn=model_name: client.completions.create(
+                        model=mn,
                         prompt=p,
                         temperature=temperature,
                         max_tokens=max_tokens,
@@ -301,7 +301,10 @@ def main():
         print(f"  Generation: {gen_time:.0f}s")
 
         rewards = compute_rewards(completions, refs)
-        # Stats
+        # Get model name from endpoint
+    models_resp = client.models.list()
+    model_name = models_resp.data[0].id
+    print(f"  Model: {model_name}")
         all_r = [r for rlist in rewards for r in rlist]
         mean_r = np.mean(all_r)
         pass1 = np.mean([max(rlist) for rlist in rewards])
@@ -355,7 +358,7 @@ def main():
                         api_key="no")
         t0 = time.time()
         _ = client.completions.create(
-            model="default",
+            model=models_resp.data[0].id,
             prompt=prompts[0],
             temperature=0.0,
             max_tokens=256,
