@@ -187,9 +187,16 @@ def main():
         df = pd.read_parquet(args.data_path)
         ds = df.to_dict("records")[:args.num_prompts]
     elif args.data_path and args.data_path.endswith(".jsonl"):
-        import pandas as pd
-        df = pd.read_json(args.data_path, lines=True)
-        ds = df.to_dict("records")[:args.num_prompts]
+        # Direct json.loads — more robust than pandas for weird JSONL
+        import json
+        ds = []
+        with open(args.data_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    ds.append(json.loads(line))
+                    if len(ds) >= args.num_prompts:
+                        break
     else:
         from datasets import load_dataset
         ds = load_dataset("gsm8k", "main", split="test")
