@@ -98,10 +98,14 @@ def topk_filtering_metrics(bf16_completions, fp4_completions, references, ks=[1,
     """
     For each prompt, extract completions, compute rewards, and measure
     how well FP4's top-K overlap with BF16's top-K.
+    Plus per-prompt complementarity analysis.
     """
     results = {k: {"precision": [], "recall": [], "best_match": []} for k in ks}
     all_bf16_rewards = []
     all_fp4_rewards = []
+
+    # Per-prompt complementarity counters
+    complementarity = {"both_correct": 0, "bf16_only": 0, "fp4_only": 0, "neither": 0}
 
     for i, (bf16_texts, fp4_texts) in enumerate(zip(bf16_completions, fp4_completions)):
         ref = references[i]
@@ -114,6 +118,18 @@ def topk_filtering_metrics(bf16_completions, fp4_completions, references, ks=[1,
 
         all_bf16_rewards.extend(bf16_r)
         all_fp4_rewards.extend(fp4_r)
+
+        # Per-prompt complementarity
+        bf16_any_correct = bf16_r.max() > 0
+        fp4_any_correct = fp4_r.max() > 0
+        if bf16_any_correct and fp4_any_correct:
+            complementarity["both_correct"] += 1
+        elif bf16_any_correct:
+            complementarity["bf16_only"] += 1
+        elif fp4_any_correct:
+            complementarity["fp4_only"] += 1
+        else:
+            complementarity["neither"] += 1
 
         N = len(bf16_r)
 
@@ -140,7 +156,7 @@ def topk_filtering_metrics(bf16_completions, fp4_completions, references, ks=[1,
                     1.0 if np.argmax(bf16_r) == np.argmax(fp4_r) else 0.0
                 )
 
-    return results, all_bf16_rewards, all_fp4_rewards
+    return results, all_bf16_rewards, all_fp4_rewards, complementarity
 
 
 def main():
@@ -210,7 +226,7 @@ def main():
     print(f"{'=' * 60}")
 
     K_VALUES = [1, 2, 4, 8, 16]
-    metrics, bf16_all, fp4_all = topk_filtering_metrics(
+    metrics, bf16_all, fp4_all, comp = topk_filtering_metrics(
         completions_store["bf16"],
         completions_store["nvfp4"],
         refs,
@@ -218,12 +234,15 @@ def main():
     )
 
     # Also FP8 for comparison
-    metrics_fp8, fp8_all, _ = topk_filtering_metrics(
-        completions_store["bf16"],
-        completions_store.get("fp8", completions_store["bf16"]),
-        refs,
-        ks=K_VALUES,
-    )
+    if "fp8" in completions_store:
+        metrics_fp8, _, _, _ = topk_filtering_metrics(
+            completions_store["bf16"],
+            completions_store["fp8"],
+            refs,
+            ks=K_VALUES,
+        )
+    else:
+        metrics_fp8 = {k: {"precision": [], "best_match": []} for k in K_VALUES}
 
     print(f"\n{'K':<6} {'Prec@K':>10} {'Recall@K':>10} {'FP8 Prec@K':>12} {'FP8 Best':>10}")
     print("-" * 56)
@@ -240,6 +259,23 @@ def main():
     print(f"\n── Generation Quality ──")
     print(f"  BF16:  mean={np.mean(bf16_all):.3f}  pass@1={np.mean([1 if r>0 else 0 for r in bf16_all]):.3f}")
     print(f"  FP4:   mean={np.mean(fp4_all):.3f}  pass@1={np.mean([1 if r>0 else 0 for r in fp4_all]):.3f}")
+
+    # ── Complementarity analysis ──────────────────────────
+    print(f"\n── Per-Prompt Complementarity ──")
+    n = sum(comp.values())
+    print(f"  Both correct:  {comp['both_correct']:>4} ({comp['both_correct']/n*100:5.1f}%)")
+    print(f"  BF16 only:     {comp['bf16_only']:>4} ({comp['bf16_only']/n*100:5.1f}%)")
+    print(f"  FP4 only:      {comp['fp4_only']:>4} ({comp['fp4_only']/n*100:5.1f}%)  ← ensemble gain!")
+    print(f"  Neither:       {comp['neither']:>4} ({comp['neither']/n*100:5.1f}%)")
+    union_correct = comp["both_correct"] + comp["bf16_only"] + comp["fp4_only"]
+    bf16_correct = comp["both_correct"] + comp["bf16_only"]
+    ensemble_gain = (union_correct - bf16_correct) / max(bf16_correct, 1) * 100
+    print(f"\n  BF16 pass@1:  {bf16_correct}/{n} ({bf16_correct/n*100:.1f}%)")
+    print(f"  Union pass@1: {union_correct}/{n} ({union_correct/n*100:.1f}%)")
+    print(f"  Ensemble gain: +{ensemble_gain:.1f}% relative improvement")
+    if comp["fp4_only"] > comp["bf16_only"]:
+        print(f"\n  → FP4 finds MORE unique correct answers than BF16 finds without it")
+        print(f"  → QUANTIZATION AS ENSEMBLE DIVERSITY is supported")
 
     # ── Key finding ──────────────────────────────────────
     k8_prec = np.mean(metrics[8]["precision"]) if metrics[8]["precision"] else 0
@@ -279,6 +315,14 @@ def main():
         "generation_quality": {
             "bf16": {"mean_reward": float(np.mean(bf16_all))},
             "fp4": {"mean_reward": float(np.mean(fp4_all))},
+        },
+        "complementarity": {
+            "both_correct": comp["both_correct"],
+            "bf16_only": comp["bf16_only"],
+            "fp4_only": comp["fp4_only"],
+            "neither": comp["neither"],
+            "bf16_pass1_pct": round((comp["both_correct"] + comp["bf16_only"]) / sum(comp.values()) * 100, 1),
+            "union_pass1_pct": round((comp["both_correct"] + comp["bf16_only"] + comp["fp4_only"]) / sum(comp.values()) * 100, 1),
         },
     }
     fp = os.path.join(args.output_dir,
