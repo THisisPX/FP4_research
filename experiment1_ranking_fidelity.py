@@ -215,6 +215,9 @@ def main():
     parser.add_argument("--max_tokens", type=int, default=512)
     parser.add_argument("--benchmark", type=str, default="gsm8k",
                         choices=["gsm8k"])
+    parser.add_argument("--data_path", type=str, default=None,
+                        help="Local dataset path (jsonl/csv/parquet). "
+                             "If not set, downloads from HuggingFace.")
     parser.add_argument("--output_dir", type=str, default="./results")
     parser.add_argument("--skip_bf16", action="store_true")
     parser.add_argument("--skip_fp8", action="store_true")
@@ -234,16 +237,43 @@ def main():
 
     # ── Load dataset ──────────────────────────────────────
     print(f"\n── Loading {args.benchmark} ──")
-    ds = load_dataset("gsm8k", "main", split="test")
-    ds = ds.select(range(min(len(ds), args.num_prompts)))
+    if args.data_path:
+        # Local file: jsonl, json, csv, or parquet
+        path = args.data_path
+        print(f"  Local: {path}")
+        if path.endswith(".jsonl") or path.endswith(".json"):
+            import pandas as pd
+            ds = pd.read_json(path, lines=path.endswith(".jsonl")).to_dict("records")
+        elif path.endswith(".csv"):
+            import pandas as pd
+            ds = pd.read_csv(path).to_dict("records")
+        elif path.endswith(".parquet"):
+            import pandas as pd
+            ds = pd.read_parquet(path).to_dict("records")
+        else:
+            # Try HuggingFace datasets load_from_disk
+            from datasets import load_from_disk
+            ds = load_from_disk(path)
+        if isinstance(ds, list):
+            ds = ds[:args.num_prompts]
+        else:
+            ds = ds.select(range(min(len(ds), args.num_prompts)))
+    else:
+        ds = load_dataset("gsm8k", "main", split="test")
+        ds = ds.select(range(min(len(ds), args.num_prompts)))
 
-    prompts = [MATH_PROMPT.format(problem=s["question"]) for s in ds]
-    # GSM8K answers are in "answer" field like "#### 42"
+    # Extract questions and answers
+    prompts = []
     refs = []
     for s in ds:
-        a = s["answer"]
+        # Support both dict and HuggingFace dataset row
+        q = s["question"] if isinstance(s, dict) else s["question"]
+        a = s["answer"] if isinstance(s, dict) else s["answer"]
+
+        prompts.append(MATH_PROMPT.format(problem=q))
         m = re.search(r'####\s*(-?[\d,]+)', a)
         refs.append(m.group(1).replace(",", "") if m else a)
+
     print(f"  {len(prompts)} prompts loaded")
 
     # ── Generate & score per precision ────────────────────
