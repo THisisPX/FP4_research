@@ -32,9 +32,9 @@ from datasets import load_dataset
 # ── Config ────────────────────────────────────────────────
 
 PRECISIONS = {
-    "bf16":  {"port": 8000, "label": "BF16", "color": "blue"},
-    "fp8":   {"port": 8001, "label": "FP8",  "color": "green"},
-    "nvfp4": {"port": 8002, "label": "FP4",  "color": "red"},
+    "bf16":  {"port": 8002, "label": "BF16", "color": "blue"},
+    "fp8":   {"port": 8003, "label": "FP8",  "color": "green"},
+    "nvfp4": {"port": 8004, "label": "FP4",  "color": "red"},
 }
 
 MATH_PROMPT = (
