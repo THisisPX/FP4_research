@@ -279,8 +279,9 @@ def main():
     # ── Generate & score per precision ────────────────────
     all_rewards = {}
 
+    skip_map = {"bf16": "skip_bf16", "fp8": "skip_fp8", "nvfp4": "skip_fp4"}
     for key in ["bf16", "fp8", "nvfp4"]:
-        if getattr(args, f"skip_{key}"):
+        if getattr(args, skip_map[key]):
             continue
 
         cfg = PRECISIONS[key]
